@@ -101,8 +101,12 @@ function App() {
 
   function reset() { setValues(initialValues); setResult(null); setError('') }
 
-  const isElevated = result?.prediction === 1
-  const probability = result ? Math.round(result.risk_probability * 1000) / 10 : 0
+ const isElevated =
+  result?.prediction?.predicted_label === 1
+
+const probability = result
+  ? result.prediction.probability_lvef_below_50 * 100
+  : 0
 
   return (
     <div className="app-shell">
@@ -174,22 +178,76 @@ function App() {
             <section className={`result-panel panel ${result ? 'has-result' : ''}`} aria-live="polite">
               <div className="section-kicker">MODEL OUTPUT</div>
               <div className="result-title-row"><h2>Prediction result</h2><span className="result-symbol"><HeartPulse size={20} /></span></div>
-              {!result ? <div className="empty-result">
-                <div className="empty-icon"><ClipboardList size={28} /></div>
-                <h3>Awaiting patient inputs</h3>
-                <p>Complete the seven measurements and submit the form to request an estimate from the fitted model.</p>
-                <div className="empty-line"><span /><span /><span /></div>
-              </div> : <div className="prediction-output">
-                <div className={`risk-badge ${isElevated ? 'elevated' : 'lower'}`}>{isElevated ? 'Above model threshold' : 'Below model threshold'}</div>
-                <div className="probability"><strong>{probability.toFixed(1)}<small>%</small></strong><span>Model-estimated score</span></div>
-                <div className="meter"><span style={{ width: `${Math.min(100, Math.max(0, probability))}%` }} /></div>
-                <div className="result-description">{result.interpretation || 'This is a model classification for the project’s reduced-LVEF proxy endpoint, not a clinical diagnosis.'}</div>
-                <div className="result-facts">
-                  <Metric label="Decision threshold" value={`${(result.threshold * 100).toFixed(1)}%`} />
-                  <Metric label="Model" value={result.model_name || '7-feature LR'} />
-                </div>
-                <div className="result-foot"><CheckCircle2 size={15} /> Response returned by prediction API</div>
-              </div>}
+             
+{!result ? (
+  <div className="empty-result">
+    <div className="empty-icon">
+      <ClipboardList size={28} />
+    </div>
+    <h3>Awaiting patient inputs</h3>
+    <p>
+      Complete the seven measurements and submit
+      the form to request an estimate from the fitted model.
+    </p>
+    <div className="empty-line">
+      <span /><span /><span />
+    </div>
+  </div>
+) : (
+  <div className="prediction-output">
+
+    <div className={`risk-badge ${isElevated ? "elevated" : "lower"}`}>
+      {isElevated
+        ? "Above model threshold"
+        : "Below model threshold"}
+    </div>
+
+    <div className="probability">
+      <strong>
+        {probability.toFixed(4)}
+        <small>%</small>
+      </strong>
+      <span>Estimated probability of LVEF below 50%</span>
+    </div>
+
+    <div className="meter">
+      <span
+        style={{
+          width: `${Math.min(100, Math.max(0, probability))}%`
+        }}
+      />
+    </div>
+
+    <div className="result-description">
+      {result.prediction.predicted_outcome}
+    </div>
+
+    <div className="result-facts">
+      <Metric
+        label="Decision threshold"
+        value={`${(
+          result.prediction.decision_threshold * 100
+        ).toFixed(2)}%`}
+      />
+
+      <Metric
+        label="Model"
+        value={result.model_name}
+      />
+    </div>
+
+    <div className="result-foot">
+      <CheckCircle2 size={15} />
+      Response returned by prediction API
+    </div>
+
+    <div className="research-notice">
+      {result.notice}
+    </div>
+
+  </div>
+)}
+
             </section>
 
             <section className="model-card panel">

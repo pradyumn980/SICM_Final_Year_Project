@@ -1,20 +1,25 @@
-from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
 import joblib
 import numpy as np
 import pandas as pd
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
+
+
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-MODEL_PATH = Path(os.getenv("MODEL_PATH", BASE_DIR / "artifacts" / "model_bundle.joblib"))
 
-FEATURES = [
+MODEL_PATH = BASE_DIR / "artifacts" / "model_bundle.joblib"
+
+EXPECTED_FEATURES = [
     "spo2_mean",
     "systolic_bp_max",
     "systolic_bp_mean",
@@ -24,116 +29,251 @@ FEATURES = [
     "creatinine_min",
 ]
 
+
+# --------------------------------------------------
+# FASTAPI APPLICATION
+# --------------------------------------------------
+
 app = FastAPI(
-    title="SICM research prediction API",
-    version="1.0.0",
+    title="SICM Research Prediction API",
     description=(
-        "Academic research API for an echo-based reduced-LVEF proxy among septic ICU stays. "
-        "Not a clinical diagnostic service."
+        "Research API using a fitted seven-feature "
+        "Logistic Regression model to estimate the "
+        "probability of LVEF below 50% on an eligible "
+        "subsequent echocardiogram among septic ICU patients."
     ),
+    version="1.0.0",
 )
 
+
+# Allow local frontend development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-_bundle: dict[str, Any] | None = None
-_load_error: str | None = None
+
+# --------------------------------------------------
+# MODEL LOADING
+# --------------------------------------------------
+
+model_bundle = None
+model_load_error = None
 
 
-class PatientFeatures(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    spo2_mean: float = Field(ge=0, le=100)
-    systolic_bp_max: float = Field(gt=0, le=300)
-    systolic_bp_mean: float = Field(gt=0, le=300)
-    rbc_min: float = Field(gt=0, le=10)
-    anion_gap_max: float = Field(ge=0, le=60)
-    diastolic_bp_mean: float = Field(gt=0, le=200)
-    creatinine_min: float = Field(ge=0, le=30)
+def load_model():
+    global model_bundle, model_load_error
 
-
-def load_bundle() -> None:
-    global _bundle, _load_error
-    _bundle = None
-    _load_error = None
-    if not MODEL_PATH.exists():
-        _load_error = f"Model artifact not found at {MODEL_PATH}"
-        return
     try:
-        candidate = joblib.load(MODEL_PATH)
-        if not isinstance(candidate, dict):
-            raise ValueError("The model bundle must be a dictionary.")
-        if candidate.get("feature_names") != FEATURES:
-            raise ValueError("Feature order in the model bundle does not match the API schema.")
-        pipeline = candidate.get("pipeline")
-        if pipeline is None or not hasattr(pipeline, "predict_proba"):
-            raise ValueError("The model bundle does not contain a predict_proba pipeline.")
-        threshold = float(candidate.get("threshold", 0.5))
-        if not 0 < threshold < 1:
-            raise ValueError("The saved decision threshold must be between 0 and 1.")
-        _bundle = candidate
-    except Exception as exc:  # Keep the API online and expose readiness separately.
-        _load_error = f"Could not load model artifact: {exc}"
+        if not MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"Model artifact not found: {MODEL_PATH}"
+            )
+
+        bundle = joblib.load(MODEL_PATH)
+
+        required_keys = {
+            "pipeline",
+            "feature_names",
+            "threshold",
+            "model_name",
+            "endpoint",
+            "feature_window",
+            "research_only",
+        }
+
+        missing_keys = required_keys - set(bundle.keys())
+
+        if missing_keys:
+            raise ValueError(
+                f"Missing model bundle keys: {missing_keys}"
+            )
+
+        if bundle["feature_names"] != EXPECTED_FEATURES:
+            raise ValueError(
+                "Model feature names or order do not match "
+                "the expected seven features."
+            )
+
+        if not 0 < float(bundle["threshold"]) < 1:
+            raise ValueError("Invalid decision threshold.")
+
+        if not hasattr(bundle["pipeline"], "predict_proba"):
+            raise ValueError(
+                "Loaded pipeline does not support predict_proba."
+            )
+
+        classes = list(
+            bundle["pipeline"].named_steps["model"].classes_
+        )
+
+        if 1 not in classes:
+            raise ValueError(
+                "Expected binary target with positive class 1."
+            )
+
+        model_bundle = bundle
+        model_load_error = None
+
+        print("SICM research model loaded successfully!")
+        print("Model:", bundle["model_name"])
+        print("Threshold:", bundle["threshold"])
+
+    except Exception as error:
+        model_bundle = None
+        model_load_error = str(error)
+
+        print("MODEL LOADING FAILED:", model_load_error)
 
 
 @app.on_event("startup")
-def startup_event() -> None:
-    load_bundle()
+def startup_event():
+    load_model()
 
+
+# --------------------------------------------------
+# REQUEST SCHEMA
+# --------------------------------------------------
+
+class PatientFeatures(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spo2_mean: Optional[float]
+    systolic_bp_max: Optional[float]
+    systolic_bp_mean: Optional[float]
+    rbc_min: Optional[float]
+    anion_gap_max: Optional[float]
+    diastolic_bp_mean: Optional[float]
+    creatinine_min: Optional[float]
+
+
+# --------------------------------------------------
+# ROOT ENDPOINT
+# --------------------------------------------------
 
 @app.get("/")
-def root() -> dict[str, str]:
-    return {"service": "SICM research prediction API", "health": "/health", "docs": "/docs"}
+def root():
+    return {
+        "message": "SICM Research Prediction API",
+        "status": "running",
+        "model_ready": model_bundle is not None,
+    }
 
+
+# --------------------------------------------------
+# HEALTH ENDPOINT
+# --------------------------------------------------
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+def health():
     return {
-        "status": "ok",
-        "model_ready": _bundle is not None,
-        "model_name": (_bundle or {}).get("model_name"),
-        "message": _load_error,
+        "status": "healthy" if model_bundle is not None else "unavailable",
+        "model_ready": model_bundle is not None,
+        "model_name": (
+            model_bundle["model_name"]
+            if model_bundle is not None
+            else None
+        ),
+        "error": model_load_error,
     }
 
+
+# --------------------------------------------------
+# PREDICTION ENDPOINT
+# --------------------------------------------------
 
 @app.post("/predict")
-def predict(data: PatientFeatures) -> dict[str, Any]:
-    if _bundle is None:
+def predict(patient: PatientFeatures):
+
+    if model_bundle is None:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "The fitted model is not installed. Export model_bundle.joblib from the project Colab notebook "
-                "using model_export/export_model_from_colab.py, then place it in backend/artifacts/."
-            ),
+            detail="Prediction model is not available."
         )
 
-    if data.systolic_bp_max < data.systolic_bp_mean:
-        raise HTTPException(status_code=422, detail="systolic_bp_max cannot be lower than systolic_bp_mean.")
-
-    row = pd.DataFrame([{name: getattr(data, name) for name in FEATURES}], columns=FEATURES)
     try:
-        probability = float(_bundle["pipeline"].predict_proba(row)[0, 1])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}") from exc
+        # Convert request into a DataFrame.
+        # Preserve the exact feature names and order.
+        patient_data = patient.model_dump()
 
-    threshold = float(_bundle.get("threshold", 0.5))
-    prediction = int(probability >= threshold)
-    return {
-        "prediction": prediction,
-        "risk_probability": probability,
-        "threshold": threshold,
-        "model_name": _bundle.get("model_name", "Seven-feature Logistic Regression"),
-        "interpretation": (
-            "The score is at or above the validation-selected model threshold for the reduced-LVEF proxy. "
-            "It is not a confirmed SICM diagnosis."
-            if prediction == 1
-            else "The score is below the validation-selected model threshold for the reduced-LVEF proxy. "
-            "This does not rule out cardiac dysfunction or SICM."
-        ),
-        "endpoint": "LVEF < 50% on an eligible subsequent echocardiogram among septic ICU patients",
-        "research_only": True,
-    }
+        input_df = pd.DataFrame(
+            [[patient_data[name] for name in EXPECTED_FEATURES]],
+            columns=EXPECTED_FEATURES,
+        )
+
+        # Reject infinite values.
+        values = input_df.to_numpy(dtype=float)
+
+        if np.isinf(values).any():
+            raise HTTPException(
+                status_code=422,
+                detail="Infinite feature values are not allowed."
+            )
+
+        # Generate probability using the fitted pipeline.
+        pipeline = model_bundle["pipeline"]
+
+        classes = list(
+            pipeline.named_steps["model"].classes_
+        )
+
+        positive_class_index = classes.index(1)
+
+        probabilities = pipeline.predict_proba(input_df)
+
+        positive_probability = float(
+            probabilities[0][positive_class_index]
+        )
+
+        # Use the exact validation-selected threshold.
+        threshold = float(model_bundle["threshold"])
+
+        predicted_label = int(
+            positive_probability >= threshold
+        )
+
+        return {
+            "success": True,
+            "model_name": model_bundle["model_name"],
+
+            "prediction": {
+                "predicted_label": predicted_label,
+                "predicted_outcome": (
+                    "LVEF below 50%"
+                    if predicted_label == 1
+                    else "LVEF not below 50%"
+                ),
+                "probability_lvef_below_50": round(
+                    positive_probability, 6
+                ),
+                "decision_threshold": threshold,
+            },
+
+            "model_metadata": {
+                "endpoint": model_bundle["endpoint"],
+                "feature_window": model_bundle["feature_window"],
+                "research_only": model_bundle["research_only"],
+            },
+
+            "notice": (
+                "Research prediction only. "
+                "Not a clinically validated diagnosis."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(error)}"
+        )
