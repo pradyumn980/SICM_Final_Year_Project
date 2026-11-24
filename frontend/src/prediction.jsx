@@ -174,7 +174,7 @@ export default function Prediction() {
             </div>
 
             <p className="probability-label">
-              Estimated probability of LVEF below 50%
+              Estimated probability of SICM proxy outcome
             </p>
 
             <div className="result-row">

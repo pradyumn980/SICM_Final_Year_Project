@@ -207,7 +207,7 @@ const probability = result
         {probability.toFixed(4)}
         <small>%</small>
       </strong>
-      <span>Estimated probability of LVEF below 50%</span>
+      <span>Estimated probability of SICM proxy outcome</span>
     </div>
 
     <div className="meter">
@@ -219,7 +219,9 @@ const probability = result
     </div>
 
     <div className="result-description">
-      {result.prediction.predicted_outcome}
+      {result.prediction.predicted_label === 1
+  ? "The model predicts the positive SICM proxy outcome."
+  : "The model predicts the negative SICM proxy outcome."}
     </div>
 
     <div className="result-facts">
@@ -265,10 +267,10 @@ const probability = result
           </aside>
         </div>
 
-        <section className="disclaimer">
+        {/* <section className="disclaimer">
           <div className="disclaimer-icon"><CircleHelp size={18} /></div>
           <div><b>Research prototype — not for clinical decision-making</b><p>The project target is LVEF below 50% on an eligible subsequent echocardiogram among septic ICU patients. It is a reduced-LVEF proxy and does not establish new dysfunction, reversibility, or a confirmed diagnosis of sepsis-induced cardiomyopathy. Do not use this output to diagnose, treat, triage, or withhold care. Any clinical use would require clinical review, rigorous external and prospective validation, calibration assessment, and appropriate regulatory oversight.</p></div>
-        </section>
+        </section> */}
       </main>
 
       <footer><span>SEPSIS-ASSOCIATED CARDIAC RISK · ACADEMIC PROJECT</span><span>Model service: {API_URL}</span></footer>
